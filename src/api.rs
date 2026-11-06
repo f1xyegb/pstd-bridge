@@ -4,7 +4,7 @@
 use crate::images::Maker;
 use crate::mcp;
 use crate::store::Store;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
@@ -85,6 +85,15 @@ async fn media(State(bridge): State<Bridge>, Path(id): Path<String>) -> Response
     }
 }
 
+/// a picture Claude made on its own machine: the raw file in, a media id out, so its bytes never
+/// pass through the conversation
+async fn upload(State(bridge): State<Bridge>, body: Bytes) -> Response {
+    match bridge.store.save_media(&body) {
+        Ok(id) => Json(json!({ "media": id })).into_response(),
+        Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+    }
+}
+
 async fn taken(State(bridge): State<Bridge>, Path(id): Path<String>) -> Response {
     match bridge.store.take(&id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -103,6 +112,7 @@ pub fn router(bridge: Bridge) -> Router {
         .route_layer(middleware::from_fn_with_state(bridge.clone(), pstd_only));
     let claude = Router::new()
         .route("/mcp", post(mcp::handle).get(mcp::no_stream).delete(mcp::no_stream))
+        .route("/mcp/media", post(upload))
         .route_layer(middleware::from_fn_with_state(bridge.clone(), claude_only));
     app.merge(claude).layer(DefaultBodyLimit::max(MAX_BODY)).with_state(bridge)
 }

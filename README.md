@@ -17,4 +17,8 @@ pstd-bridge connect   show the QR for pstd and the line for Claude
 pstd-bridge key       set the image generator's key
 ```
 
-Claude connects over MCP at `/mcp`: `pstd_plan`, `pstd_generate_image`, `pstd_add_post`, `pstd_queue`.
+Claude connects over MCP at `/mcp`: `pstd_plan`, `pstd_generate_image`, `pstd_add_post`, `pstd_queue`. A picture made on Claude's own machine goes up as a raw file, and the image key is then not needed:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" --data-binary @post.png https://your-server/mcp/media
+```

@@ -192,6 +192,27 @@ fn the_pair_link_is_escaped() {
 }
 
 #[tokio::test]
+async fn claude_uploads_a_picture_it_made() {
+    let r = rig();
+    let upload = |token: String, bytes: &'static [u8]| {
+        let app = r.app.clone();
+        async move {
+            let request = Request::builder().method(Method::POST).uri("/mcp/media").header(header::AUTHORIZATION, format!("Bearer {token}"));
+            let reply = app.oneshot(request.body(Body::from(bytes)).unwrap()).await.unwrap();
+            let status = reply.status();
+            (status, reply.into_body().collect().await.unwrap().to_bytes().to_vec())
+        }
+    };
+    assert_eq!(upload(r.pstd.clone(), PNG).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(upload(r.claude.clone(), b"not a picture").await.0, StatusCode::BAD_REQUEST);
+    let (status, body) = upload(r.claude.clone(), PNG).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = serde_json::from_slice::<Value>(&body).unwrap()["media"].as_str().unwrap().to_string();
+    let (status, bytes) = send(&r.app, Method::GET, &format!("/api/media/{id}"), &r.pstd, None).await;
+    assert_eq!((status, bytes.as_slice()), (StatusCode::OK, PNG));
+}
+
+#[tokio::test]
 async fn pstd_sets_the_image_key() {
     let r = rig();
     let (_, body) = send(&r.app, Method::GET, "/api/health", &r.pstd, None).await;

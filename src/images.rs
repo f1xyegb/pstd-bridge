@@ -27,7 +27,7 @@ pub fn openai(store: Arc<Store>) -> Maker {
         Box::pin(async move {
             let config = store.config().map_err(|e| e.to_string())?;
             if config.image_key.is_empty() {
-                return Err("no image key on the server: run `pstd-bridge key`".into());
+                return Err("no image key on the server: POST a finished picture to /mcp/media instead, or run `pstd-bridge key`".into());
             }
             let model = if config.image_model.is_empty() { DEFAULT_MODEL.to_string() } else { config.image_model };
             let reply: Value = reqwest::Client::new()

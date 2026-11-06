@@ -1,6 +1,6 @@
 #!/bin/sh
 # One line on a Linux server: fetches pstd-bridge for this machine and starts its setup.
-#   curl -fsSL https://f1xyegb.github.io/pstd/bridge.sh | sudo sh
+#   curl -fsSL https://f1xyegb.github.io/pstd/bridge.sh | sudo sh -s -- --auto [--domain example.com]
 set -eu
 
 case "$(uname -m)" in
@@ -23,4 +23,4 @@ curl -fsSL "$url" -o /usr/local/bin/pstd-bridge
 chmod 755 /usr/local/bin/pstd-bridge
 
 # the script itself arrives on stdin: the questions need the terminal
-exec /usr/local/bin/pstd-bridge setup </dev/tty
+exec /usr/local/bin/pstd-bridge setup "$@" </dev/tty

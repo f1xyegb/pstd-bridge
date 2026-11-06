@@ -68,7 +68,11 @@ async fn main() {
         let store = Arc::new(Store::open(home())?);
         match command.as_str() {
             "serve" => serve(store).await,
-            "setup" => setup::run(&store).await,
+            "setup" => {
+                let args: Vec<String> = std::env::args().skip(2).collect();
+                let domain = args.iter().position(|a| a == "--domain").and_then(|i| args.get(i + 1)).cloned();
+                setup::run(&store, domain, args.iter().any(|a| a == "--auto")).await
+            }
             "connect" => setup::connect(&store),
             "key" => setup::key(&store),
             _ => {

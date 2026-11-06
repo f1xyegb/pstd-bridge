@@ -47,8 +47,24 @@ async fn claude_only(State(bridge): State<Bridge>, request: Request, next: Next)
     if matches(bearer(&request), &token) { next.run(request).await } else { StatusCode::UNAUTHORIZED.into_response() }
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+async fn health(State(bridge): State<Bridge>) -> Json<Value> {
+    let images = bridge.store.config().is_ok_and(|c| !c.image_key.is_empty());
+    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION"), "images": images }))
+}
+
+/// the person types the generator's key in pstd, not in a terminal
+async fn image_key(State(bridge): State<Bridge>, Json(body): Json<Value>) -> Response {
+    let Some(key) = body["key"].as_str().map(str::trim).filter(|k| !k.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, "a key is needed").into_response();
+    };
+    let saved = bridge.store.config().and_then(|mut config| {
+        config.image_key = key.to_string();
+        bridge.store.save_config(&config)
+    });
+    match saved {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
 }
 
 async fn put_snapshot(State(bridge): State<Bridge>, Json(snapshot): Json<Value>) -> Response {
@@ -80,6 +96,7 @@ pub fn router(bridge: Bridge) -> Router {
     let app = Router::new()
         .route("/api/health", get(health))
         .route("/api/snapshot", put(put_snapshot))
+        .route("/api/image-key", put(image_key))
         .route("/api/posts", get(posts))
         .route("/api/media/{id}", get(media))
         .route("/api/posts/{id}/taken", post(taken))

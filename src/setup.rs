@@ -59,7 +59,7 @@ fn encoded(text: &str) -> String {
 }
 
 pub fn pair_link(config: &Config) -> String {
-    format!("pstd://connect?url={}&token={}", encoded(&config.url), config.pstd_token)
+    format!("pstd://connect?url={}&token={}&claude={}", encoded(&config.url), config.pstd_token, config.claude_token)
 }
 
 pub fn claude_line(config: &Config) -> String {
@@ -174,7 +174,8 @@ fn behind_proxy_hint(host: &str) {
     );
 }
 
-pub async fn run(store: &Store) -> io::Result<()> {
+/// `auto`: no questions, for the line pstd builds. `domain`: the answer to the one that matters
+pub async fn run(store: &Store, domain: Option<String>, auto: bool) -> io::Result<()> {
     if !cfg!(target_os = "linux") || Command::new("systemctl").arg("--version").output().is_err() {
         return Err(io::Error::other("setup is for a Linux server with systemd"));
     }
@@ -197,7 +198,11 @@ pub async fn run(store: &Store) -> io::Result<()> {
     } else {
         "Your domain for this server, or Enter if you don't have one:"
     };
-    let mut host = ask(question).or_skip();
+    let mut host = match domain {
+        Some(domain) => domain,
+        None if auto => String::new(),
+        None => ask(question).or_skip(),
+    };
     if host.is_empty() {
         if proxied {
             return Err(io::Error::other("a website's domain is needed here"));
@@ -210,11 +215,13 @@ pub async fn run(store: &Store) -> io::Result<()> {
     config.tls_host = if proxied { String::new() } else { host.clone() };
     config.bind = DEFAULT_BIND.into();
 
-    step("Pictures");
-    println!("  The key of your image generator (OpenAI). Without one, posts come without pictures.");
-    let image_key = ask("Paste it, or press Enter to add it later:").or_skip();
-    if !image_key.is_empty() {
-        config.image_key = image_key;
+    if !auto {
+        step("Pictures");
+        println!("  The key of your image generator (OpenAI). You can also add it in pstd later.");
+        let image_key = ask("Paste it, or press Enter to skip:").or_skip();
+        if !image_key.is_empty() {
+            config.image_key = image_key;
+        }
     }
     store.save_config(&config)?;
 
@@ -255,9 +262,8 @@ pub fn connect(store: &Store) -> io::Result<()> {
     }
     let code = QrCode::new(pair_link(&config)).map_err(io::Error::other)?;
     let picture = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
-    println!("\n{picture}\nScan this in pstd: Settings › Integrations › Claude.\n");
-    println!("For Claude Code, paste this on your computer:\n\n{}\n", claude_line(&config));
-    println!("For the Claude app, add an MCP server:\n  URL: {}/mcp\n  Authorization: Bearer {}", config.url, config.claude_token);
+    println!("\n{picture}\nScan this with your iPhone's camera. pstd shows the next steps.\n");
+    println!("Without pstd at hand, for Claude Code:\n\n{}\n", claude_line(&config));
     Ok(())
 }
 

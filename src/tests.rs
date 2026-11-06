@@ -187,8 +187,21 @@ async fn mcp_handshake() {
 
 #[test]
 fn the_pair_link_is_escaped() {
-    let config = crate::store::Config { url: "https://1-2-3-4.sslip.io".into(), pstd_token: "abc".into(), ..Default::default() };
-    assert_eq!(setup::pair_link(&config), "pstd://connect?url=https%3A%2F%2F1-2-3-4.sslip.io&token=abc");
+    let config = crate::store::Config { url: "https://1-2-3-4.sslip.io".into(), pstd_token: "abc".into(), claude_token: "def".into(), ..Default::default() };
+    assert_eq!(setup::pair_link(&config), "pstd://connect?url=https%3A%2F%2F1-2-3-4.sslip.io&token=abc&claude=def");
+}
+
+#[tokio::test]
+async fn pstd_sets_the_image_key() {
+    let r = rig();
+    let (_, body) = send(&r.app, Method::GET, "/api/health", &r.pstd, None).await;
+    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["images"], false);
+    assert_eq!(send(&r.app, Method::PUT, "/api/image-key", &r.claude, Some(json!({ "key": "k" }))).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(send(&r.app, Method::PUT, "/api/image-key", &r.pstd, Some(json!({ "key": " " }))).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send(&r.app, Method::PUT, "/api/image-key", &r.pstd, Some(json!({ "key": "k" }))).await.0, StatusCode::NO_CONTENT);
+    let (_, body) = send(&r.app, Method::GET, "/api/health", &r.pstd, None).await;
+    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap()["images"], true);
+    assert_eq!(r.store.config().unwrap().pstd_token, r.pstd);
 }
 
 #[test]

@@ -5,10 +5,10 @@ The mailbox between your own Claude and [pstd](https://f1xyegb.github.io/pstd/).
 It runs on your server. Your posts and keys stay there.
 
 ```sh
-curl -fsSL https://f1xyegb.github.io/pstd/bridge.sh | sudo sh
+curl -fsSL https://f1xyegb.github.io/pstd/bridge.sh | sudo sh -s -- --auto
 ```
 
-Linux with systemd. It asks for a domain and an image key, either can be skipped, and ends on a QR for pstd.
+Linux with systemd. Add `--domain example.com` if the server has one; a website on it stays as it is. It ends on a QR for pstd. pstd shows these steps with your details filled in.
 
 ```
 pstd-bridge setup     set this server up

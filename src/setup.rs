@@ -16,6 +16,9 @@ const UNIT: &str = "/etc/systemd/system/pstd-bridge.service";
 const INSTALLED: &str = "/usr/local/bin/pstd-bridge";
 /// a first certificate can take this long
 const WAIT_SECONDS: u64 = 90;
+/// behind a website: the address under the site's own domain, so the site itself stays as it is
+const SITE_PATH: &str = "/pstd-bridge";
+const LOCAL_PORT: u16 = 8787;
 
 pub fn is_root() -> bool {
     cfg!(target_os = "linux")
@@ -140,21 +143,33 @@ async fn wait_until_up(url: &str, token: &str) -> bool {
     false
 }
 
+pub fn site_url(host: &str) -> String {
+    format!("https://{host}{SITE_PATH}")
+}
+
 fn behind_proxy_hint(host: &str) {
     println!(
         "
-  Another web server already holds port 443. Add this to it, then reload it:
+  Add this to your website's setup, for {host}. Only this path changes,
+  the rest of the site stays as it is.
 
-  Caddy:
-    {host} {{
-      reverse_proxy {DEFAULT_BIND}
-    }}
-
-  nginx, in the server block for {host}:
-    location / {{
-      proxy_pass http://{DEFAULT_BIND};
+  nginx, inside the server block that listens on 443:
+    location {SITE_PATH}/ {{
+      proxy_pass http://{DEFAULT_BIND}/;
+      proxy_read_timeout 200s;
       client_max_body_size 8m;
     }}
+  then: nginx -t && systemctl reload nginx
+
+  Caddy, inside the site's block:
+    handle_path {SITE_PATH}/* {{
+      reverse_proxy {DEFAULT_BIND}
+    }}
+  then: systemctl reload caddy
+
+  Apache, inside the VirtualHost on 443, with mod_proxy_http on:
+    ProxyPass {SITE_PATH}/ http://{DEFAULT_BIND}/ timeout=200
+  then: systemctl reload apache2
 "
     );
 }
@@ -168,19 +183,30 @@ pub async fn run(store: &Store) -> io::Result<()> {
     }
     println!("pstd bridge setup\n");
     let mut config = store.config()?;
+    // running it again: our own service must not read as somebody else holding the ports
+    run_quiet("systemctl", &["stop", SERVICE]);
+    if port_taken(LOCAL_PORT) {
+        return Err(io::Error::other(format!("port {LOCAL_PORT} is taken by something else on this server")));
+    }
 
     step("Address");
-    let mut host = ask("Your domain for this server, or Enter if you don't have one:").or_skip();
     let proxied = port_taken(443);
+    let question = if proxied {
+        println!("  A website already runs here. It stays as it is: pstd gets a path under its domain.");
+        "Your website's domain:"
+    } else {
+        "Your domain for this server, or Enter if you don't have one:"
+    };
+    let mut host = ask(question).or_skip();
     if host.is_empty() {
         if proxied {
-            return Err(io::Error::other("port 443 is taken, so this needs a domain pointing at the server"));
+            return Err(io::Error::other("a website's domain is needed here"));
         }
         let ip = public_ip().await.ok_or_else(|| io::Error::other("can't find this server's public IP"))?;
         host = free_hostname(&ip);
         println!("  using {host}");
     }
-    config.url = format!("https://{host}");
+    config.url = if proxied { site_url(&host) } else { format!("https://{host}") };
     config.tls_host = if proxied { String::new() } else { host.clone() };
     config.bind = DEFAULT_BIND.into();
 
@@ -194,10 +220,11 @@ pub async fn run(store: &Store) -> io::Result<()> {
 
     step("Installing the service");
     install_service(store)?;
-    open_firewall();
     if proxied {
         behind_proxy_hint(&host);
         ask("Press Enter when that's done:").or_skip();
+    } else {
+        open_firewall();
     }
 
     step("Checking it from outside");

@@ -192,6 +192,11 @@ fn the_pair_link_is_escaped() {
 }
 
 #[test]
+fn behind_a_website_the_address_is_a_path_under_its_domain() {
+    assert_eq!(setup::site_url("example.com"), "https://example.com/pstd-bridge");
+}
+
+#[test]
 fn a_post_reads_without_its_optional_fields() {
     let p: Post = serde_json::from_value(json!({ "id": "x", "project": "y", "placements": [{ "network": "threads", "at": "z" }] })).unwrap();
     assert_eq!(p.placements[0].format, "post");

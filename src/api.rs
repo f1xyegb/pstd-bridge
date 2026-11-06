@@ -1,0 +1,91 @@
+//! pstd's side of the server: it publishes its snapshot and takes the posts. MCP is Claude's side
+//! (`mcp.rs`). Each side has its own token, so one can be replaced without the other.
+
+use crate::images::Maker;
+use crate::mcp;
+use crate::store::Store;
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, Path, Request, State};
+use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
+use axum::{Json, Router};
+use serde_json::{json, Value};
+use std::sync::Arc;
+use subtle::ConstantTimeEq;
+
+const MAX_BODY: usize = 8 * 1024 * 1024;
+
+#[derive(Clone)]
+pub struct Bridge {
+    pub store: Arc<Store>,
+    pub images: Maker,
+}
+
+fn bearer(request: &Request) -> &[u8] {
+    request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("")
+        .as_bytes()
+}
+
+fn matches(given: &[u8], token: &str) -> bool {
+    !token.is_empty() && bool::from(given.ct_eq(token.as_bytes()))
+}
+
+async fn pstd_only(State(bridge): State<Bridge>, request: Request, next: Next) -> Response {
+    let token = bridge.store.config().map(|c| c.pstd_token).unwrap_or_default();
+    if matches(bearer(&request), &token) { next.run(request).await } else { StatusCode::UNAUTHORIZED.into_response() }
+}
+
+async fn claude_only(State(bridge): State<Bridge>, request: Request, next: Next) -> Response {
+    let token = bridge.store.config().map(|c| c.claude_token).unwrap_or_default();
+    if matches(bearer(&request), &token) { next.run(request).await } else { StatusCode::UNAUTHORIZED.into_response() }
+}
+
+async fn health() -> Json<Value> {
+    Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") }))
+}
+
+async fn put_snapshot(State(bridge): State<Bridge>, Json(snapshot): Json<Value>) -> Response {
+    match bridge.store.put_snapshot(&snapshot) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+    }
+}
+
+async fn posts(State(bridge): State<Bridge>) -> Json<Value> {
+    Json(json!({ "posts": bridge.store.posts() }))
+}
+
+async fn media(State(bridge): State<Bridge>, Path(id): Path<String>) -> Response {
+    match bridge.store.media(&id) {
+        Some((bytes, mime)) => ([(header::CONTENT_TYPE, mime)], Body::from(bytes)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn taken(State(bridge): State<Bridge>, Path(id): Path<String>) -> Response {
+    match bridge.store.take(&id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+    }
+}
+
+pub fn router(bridge: Bridge) -> Router {
+    let app = Router::new()
+        .route("/api/health", get(health))
+        .route("/api/snapshot", put(put_snapshot))
+        .route("/api/posts", get(posts))
+        .route("/api/media/{id}", get(media))
+        .route("/api/posts/{id}/taken", post(taken))
+        .route_layer(middleware::from_fn_with_state(bridge.clone(), pstd_only));
+    let claude = Router::new()
+        .route("/mcp", post(mcp::handle).get(mcp::no_stream).delete(mcp::no_stream))
+        .route_layer(middleware::from_fn_with_state(bridge.clone(), claude_only));
+    app.merge(claude).layer(DefaultBodyLimit::max(MAX_BODY)).with_state(bridge)
+}

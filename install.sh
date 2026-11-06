@@ -19,8 +19,10 @@ if [ "$(id -u)" != 0 ]; then
 fi
 
 url="https://github.com/f1xyegb/pstd-bridge/releases/latest/download/pstd-bridge-linux-$arch"
-curl -fsSL "$url" -o /usr/local/bin/pstd-bridge
-chmod 755 /usr/local/bin/pstd-bridge
+# beside the old one, then over it: a running service keeps its file busy
+curl -fsSL "$url" -o /usr/local/bin/pstd-bridge.new
+chmod 755 /usr/local/bin/pstd-bridge.new
+mv -f /usr/local/bin/pstd-bridge.new /usr/local/bin/pstd-bridge
 
 # the script itself arrives on stdin: the questions need the terminal
 exec /usr/local/bin/pstd-bridge setup "$@" </dev/tty

@@ -1,5 +1,5 @@
 //! Everything the bridge keeps, as plain files in one folder: the config, the snapshot pstd
-//! publishes, the posts waiting for pstd, and their pictures. A post and its pictures are gone once
+//! publishes, the posts waiting for pstd, and their pictures and videos. A post and its files are gone once
 //! pstd has taken them.
 
 use chrono::{DateTime, Utc};
@@ -8,12 +8,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-/// pictures no post came to use go after this long
-const ORPHAN_AFTER: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// files no post came to use go after this long: a video is real disk
+const ORPHAN_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 /// taken ids remembered, so a late repeat of a taken post is refused and not delivered twice
 const TAKEN_KEPT: usize = 2000;
 
@@ -103,13 +104,39 @@ fn write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+const EXTENSIONS: [&str; 5] = ["png", "jpg", "webp", "mp4", "mov"];
+/// enough of a file's start to tell what it is
+const HEAD: usize = 12;
+
+const UNKNOWN: &str = "not a PNG, JPEG, WebP, MP4 or MOV";
+
 fn kind(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
     match bytes {
         [0x89, b'P', b'N', b'G', ..] => Some(("png", "image/png")),
         [0xFF, 0xD8, 0xFF, ..] => Some(("jpg", "image/jpeg")),
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some(("webp", "image/webp")),
+        // HEIC and AVIF stills open the same way as a video
+        [_, _, _, _, b'f', b't', b'y', b'p', brand @ ..] if brand.starts_with(b"qt  ") => Some(("mov", "video/quicktime")),
+        [_, _, _, _, b'f', b't', b'y', b'p', brand @ ..] if [&b"heic"[..], b"heix", b"mif1", b"msf1", b"avif"].iter().any(|b| brand.starts_with(b)) => None,
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => Some(("mp4", "video/mp4")),
+        [_, _, _, _, b'm', b'o', b'o', b'v', ..] | [_, _, _, _, b'm', b'd', b'a', b't', ..] | [_, _, _, _, b'w', b'i', b'd', b'e', ..] => Some(("mov", "video/quicktime")),
         _ => None,
     }
+}
+
+/// a file still arriving. Dropped before it is adopted, as when the sender goes away, it is removed
+pub struct Incoming(PathBuf);
+
+impl Drop for Incoming {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn head(path: &Path) -> std::io::Result<([u8; HEAD], usize)> {
+    let mut bytes = [0u8; HEAD];
+    let read = fs::File::open(path)?.read(&mut bytes)?;
+    Ok((bytes, read))
 }
 
 impl Store {
@@ -199,7 +226,7 @@ impl Store {
         }
         for id in &post.media {
             if self.media_path(id).is_none() {
-                return Err(format!("no picture {id}: make it with pstd_generate_image"));
+                return Err(format!("no picture {id}: send the file to /mcp/media first"));
             }
         }
         if self.taken().ids.contains(&post.id) {
@@ -264,24 +291,51 @@ impl Store {
         if !safe(id) {
             return None;
         }
-        ["png", "jpg", "webp"].iter().map(|x| self.root.join("media").join(format!("{id}.{x}"))).find(|p| p.exists())
+        EXTENSIONS.iter().map(|x| self.root.join("media").join(format!("{id}.{x}"))).find(|p| p.exists())
     }
 
     pub fn save_media(&self, bytes: &[u8]) -> Result<String, String> {
-        let (ext, _) = kind(bytes).ok_or("not a PNG, JPEG or WebP")?;
+        let (ext, _) = kind(bytes).ok_or(UNKNOWN)?;
         self.sweep();
         let id = format!("m_{}", &token()[..24]);
         write(&self.root.join("media").join(format!("{id}.{ext}")), bytes).map_err(|e| e.to_string())?;
         Ok(id)
     }
 
-    pub fn media(&self, id: &str) -> Option<(Vec<u8>, &'static str)> {
-        let bytes = fs::read(self.media_path(id)?).ok()?;
-        let (_, mime) = kind(&bytes)?;
-        Some((bytes, mime))
+    /// a place on disk for an upload, so a large one never sits in memory
+    pub fn incoming(&self) -> std::io::Result<(Incoming, fs::File)> {
+        let path = self.root.join("media").join(format!(".in_{}", &token()[..24]));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
+        Ok((Incoming(path), file))
     }
 
-    fn sweep(&self) {
+    /// the finished upload becomes media, named by what the file really is
+    pub fn adopt(&self, incoming: &Incoming) -> Result<String, String> {
+        let (bytes, read) = head(&incoming.0).map_err(|e| e.to_string())?;
+        let (ext, _) = kind(&bytes[..read]).ok_or(UNKNOWN)?;
+        self.sweep();
+        let id = format!("m_{}", &token()[..24]);
+        fs::rename(&incoming.0, self.root.join("media").join(format!("{id}.{ext}"))).map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+
+    /// where a file is, how long, and what it is
+    pub fn media(&self, id: &str) -> Option<(PathBuf, u64, &'static str)> {
+        let path = self.media_path(id)?;
+        let (bytes, read) = head(&path).ok()?;
+        let (_, mime) = kind(&bytes[..read])?;
+        let length = fs::metadata(&path).ok()?.len();
+        Some((path, length, mime))
+    }
+
+    pub fn sweep(&self) {
         let used: HashSet<String> = self.posts().into_iter().flat_map(|p| p.media).collect();
         let now = SystemTime::now();
         for entry in fs::read_dir(self.root.join("media")).into_iter().flatten().flatten() {

@@ -37,6 +37,15 @@ pub fn home() -> PathBuf {
 
 async fn serve(store: Arc<Store>) -> std::io::Result<()> {
     let config = store.config()?;
+    // at the start too: a file left from before a restart shouldn't wait for the next upload
+    let sweeping = store.clone();
+    tokio::spawn(async move {
+        let mut hourly = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+        loop {
+            hourly.tick().await;
+            sweeping.sweep();
+        }
+    });
     let app = api::router(Bridge { images: images::openai(store.clone()), store: store.clone() });
     if config.tls_host.is_empty() {
         let bind = if config.bind.is_empty() { DEFAULT_BIND } else { &config.bind };

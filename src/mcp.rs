@@ -41,7 +41,7 @@ fn tools() -> Value {
                     "project": { "type": "string", "description": "a project id from pstd_plan" },
                     "idea": { "type": "string" },
                     "prompt": { "type": "string", "description": "what the pictures were made from" },
-                    "media": { "type": "array", "items": { "type": "string" }, "description": "media ids in order; the first is the cover. An id comes from pstd_generate_image, or from POSTing the raw PNG, JPEG or WebP file to this server's /mcp/media with the same bearer token" },
+                    "media": { "type": "array", "items": { "type": "string" }, "description": "media ids in order; the first is the cover. An id comes from POSTing the raw PNG, JPEG, WebP, MP4 or MOV file, any size, to this server's /mcp/media with the same bearer token, or from pstd_generate_image" },
                     "placements": {
                         "type": "array",
                         "items": {

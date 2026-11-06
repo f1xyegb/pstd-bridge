@@ -213,6 +213,59 @@ async fn claude_uploads_a_picture_it_made() {
 }
 
 #[tokio::test]
+async fn a_large_video_goes_up_and_comes_back_with_its_type() {
+    let r = rig();
+    let mut video = b"\0\0\0\x18ftypisom".to_vec();
+    video.resize(9 * 1024 * 1024, 7);
+    let upload = |bytes: Vec<u8>| {
+        let request = Request::builder().method(Method::POST).uri("/mcp/media").header(header::AUTHORIZATION, format!("Bearer {}", r.claude));
+        r.app.clone().oneshot(request.body(Body::from(bytes)).unwrap())
+    };
+    let reply = upload(video.clone()).await.unwrap();
+    assert_eq!(reply.status(), StatusCode::OK);
+    let body = reply.into_body().collect().await.unwrap().to_bytes();
+    let id = serde_json::from_slice::<Value>(&body).unwrap()["media"].as_str().unwrap().to_string();
+
+    let request = Request::builder().uri(format!("/api/media/{id}")).header(header::AUTHORIZATION, format!("Bearer {}", r.pstd));
+    let reply = r.app.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(reply.status(), StatusCode::OK);
+    assert_eq!(reply.headers()[header::CONTENT_TYPE], "video/mp4");
+    assert_eq!(reply.headers()[header::CONTENT_LENGTH], video.len().to_string());
+    assert_eq!(reply.into_body().collect().await.unwrap().to_bytes().len(), video.len());
+
+    let mov = b"\0\0\0\x14ftypqt  \0\0\0\0".to_vec();
+    assert_eq!(upload(mov).await.unwrap().status(), StatusCode::OK);
+    let heic = b"\0\0\0\x18ftypheic\0\0\0\0".to_vec();
+    assert_eq!(upload(heic).await.unwrap().status(), StatusCode::BAD_REQUEST);
+    let left: Vec<_> = std::fs::read_dir(r.store.root().join("media")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with(".in_")).collect();
+    assert!(left.is_empty(), "an upload left its temporary file");
+}
+
+#[test]
+fn a_file_no_post_used_goes_after_a_day() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let age = |id: &str, hours: u64| {
+        let file = std::fs::File::options().write(true).open(dir.path().join("media").join(format!("{id}.png"))).unwrap();
+        file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(hours * 60 * 60)).unwrap();
+    };
+    let (old, fresh) = (store.save_media(PNG).unwrap(), store.save_media(PNG).unwrap());
+    age(&old, 25);
+    age(&fresh, 23);
+    store.sweep();
+    assert!(store.media(&old).is_none());
+    assert!(store.media(&fresh).is_some());
+}
+
+#[tokio::test]
+async fn the_json_routes_keep_their_limit() {
+    let r = rig();
+    let request = Request::builder().method(Method::POST).uri("/mcp").header(header::AUTHORIZATION, format!("Bearer {}", r.claude)).header(header::CONTENT_TYPE, "application/json");
+    let reply = r.app.clone().oneshot(request.body(Body::from(vec![b' '; 9 * 1024 * 1024])).unwrap()).await.unwrap();
+    assert_eq!(reply.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
 async fn pstd_sets_the_image_key() {
     let r = rig();
     let (_, body) = send(&r.app, Method::GET, "/api/health", &r.pstd, None).await;

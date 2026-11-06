@@ -162,8 +162,11 @@ fn behind_proxy_hint(host: &str) {
   nginx, inside the server block that listens on 443:
     location {SITE_PATH}/ {{
       proxy_pass http://{DEFAULT_BIND}/;
-      proxy_read_timeout 200s;
-      client_max_body_size 8m;
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
+      proxy_request_buffering off;
+      proxy_buffering off;
+      client_max_body_size 0;
     }}
   then: nginx -t && systemctl reload nginx
 
@@ -174,7 +177,7 @@ fn behind_proxy_hint(host: &str) {
   then: systemctl reload caddy
 
   Apache, inside the VirtualHost on 443, with mod_proxy_http on:
-    ProxyPass {SITE_PATH}/ http://{DEFAULT_BIND}/ timeout=200
+    ProxyPass {SITE_PATH}/ http://{DEFAULT_BIND}/ timeout=3600
   then: systemctl reload apache2
 "
     );

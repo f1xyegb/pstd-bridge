@@ -143,6 +143,12 @@ async fn wait_until_up(url: &str, token: &str) -> bool {
     false
 }
 
+/// running it again changes nothing the person chose: no questions, straight to the QR. Only another
+/// domain goes through setup again
+pub fn already_set_up(config: &Config, domain: Option<&str>) -> bool {
+    !config.url.is_empty() && domain.is_none_or(|d| config.url.contains(d))
+}
+
 pub fn site_url(host: &str) -> String {
     format!("https://{host}{SITE_PATH}")
 }
@@ -184,7 +190,17 @@ pub async fn run(store: &Store, domain: Option<String>, auto: bool) -> io::Resul
     }
     println!("pstd bridge setup\n");
     let mut config = store.config()?;
-    // running it again: our own service must not read as somebody else holding the ports
+    if already_set_up(&config, domain.as_deref()) {
+        println!("Already set up at {}.", config.url);
+        step("Updating the service");
+        install_service(store)?;
+        if !wait_until_up(&config.url, &config.pstd_token).await {
+            println!("  {} doesn't answer. Look at: journalctl -u {SERVICE} -n 30", config.url);
+            return Err(io::Error::other("the server is not reachable"));
+        }
+        return connect(store);
+    }
+    // a new address on a set-up server: our own service must not read as somebody else holding the ports
     run_quiet("systemctl", &["stop", SERVICE]);
     if port_taken(LOCAL_PORT) {
         return Err(io::Error::other(format!("port {LOCAL_PORT} is taken by something else on this server")));

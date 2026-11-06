@@ -205,6 +205,16 @@ async fn pstd_sets_the_image_key() {
 }
 
 #[test]
+fn running_setup_again_asks_nothing_unless_the_domain_changes() {
+    let fresh = crate::store::Config::default();
+    assert!(!setup::already_set_up(&fresh, None));
+    let done = crate::store::Config { url: "https://1-2-3-4.sslip.io".into(), ..Default::default() };
+    assert!(setup::already_set_up(&done, None));
+    assert!(setup::already_set_up(&done, Some("1-2-3-4.sslip.io")));
+    assert!(!setup::already_set_up(&done, Some("example.com")));
+}
+
+#[test]
 fn behind_a_website_the_address_is_a_path_under_its_domain() {
     assert_eq!(setup::site_url("example.com"), "https://example.com/pstd-bridge");
 }

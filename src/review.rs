@@ -57,7 +57,8 @@ pub fn page(link: &str) -> String {
 <style>body{{font:17px -apple-system,system-ui,sans-serif;margin:0;padding:48px 24px;text-align:center;color:#222;background:#f6f3ef}}\
 a{{display:inline-block;margin-top:24px;padding:14px 28px;border-radius:999px;background:#222;color:#fff;text-decoration:none;font-weight:600}}\
 p{{color:#666}}</style></head><body><h1>pstd test server</h1>\
-<p>Open pstd and confirm “Connect This Server?”.</p><a href=\"{link}\">Open in pstd</a>\
+<p>Connecting needs pstd Pro: if pstd shows the offer first, buy it with the sandbox account, \
+then confirm “Connect This Server?”. One test post arrives.</p><a href=\"{link}\">Open in pstd</a>\
 <script>location.href={json}</script></body></html>",
         link = link.replace('&', "&amp;"),
         json = serde_json::to_string(link).unwrap_or_default(),

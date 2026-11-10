@@ -116,13 +116,20 @@ fn safe(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// whole or not at all, and owned as the file it replaces (or its folder) is: a command run as root
+/// must never leave a file the service can't read, not even for the moment before a chown
 fn write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, data)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+        let owner = fs::metadata(path).or_else(|_| fs::metadata(path.parent().unwrap_or(Path::new("."))))?;
+        let mine = fs::metadata(&tmp)?;
+        if (owner.uid(), owner.gid()) != (mine.uid(), mine.gid()) {
+            std::os::unix::fs::chown(&tmp, Some(owner.uid()), Some(owner.gid()))?;
+        }
     }
     fs::rename(&tmp, path)
 }
@@ -174,17 +181,20 @@ impl Store {
         &self.root
     }
 
-    /// the config, made with fresh tokens the first time
+    /// the config, made with fresh tokens the first time. One that is there but can't be read is an
+    /// error, never replaced: replacing it would lose the address and both tokens
     pub fn config(&self) -> std::io::Result<Config> {
         let path = self.root.join("config.json");
-        if let Ok(data) = fs::read(&path) {
-            if let Ok(config) = serde_json::from_slice(&data) {
-                return Ok(config);
+        match fs::read(&path) {
+            Ok(data) => serde_json::from_slice(&data)
+                .map_err(|e| std::io::Error::other(format!("{} can't be read: {e}", path.display()))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let config = Config { pstd_token: token(), claude_token: token(), ..Default::default() };
+                self.save_config(&config)?;
+                Ok(config)
             }
+            Err(e) => Err(std::io::Error::other(format!("{} can't be read: {e}", path.display()))),
         }
-        let config = Config { pstd_token: token(), claude_token: token(), ..Default::default() };
-        self.save_config(&config)?;
-        Ok(config)
     }
 
     pub fn save_config(&self, config: &Config) -> std::io::Result<()> {

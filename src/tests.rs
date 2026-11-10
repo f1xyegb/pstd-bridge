@@ -368,3 +368,32 @@ async fn the_review_link_opens_only_with_its_code_and_only_while_open() {
     assert_eq!(send(&r.app, Method::GET, "/r/abcd2345", "", None).await.0, StatusCode::NOT_FOUND);
     assert_eq!(send(&r.app, Method::GET, "/api/posts", &test.pstd_token, None).await.0, StatusCode::UNAUTHORIZED);
 }
+
+#[test]
+fn a_config_that_cant_be_read_is_an_error_and_is_never_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let first = store.config().unwrap();
+    let path = dir.path().join("config.json");
+
+    // half a file, as if read mid-write: an error, and the file stays as it is
+    std::fs::write(&path, b"{\"pstd_token\":").unwrap();
+    assert!(store.config().is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"{\"pstd_token\":");
+
+    // a file this process may not read: the same
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let whole = serde_json::to_vec(&first).unwrap();
+        std::fs::write(&path, &whole).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&path).is_err() {
+            assert!(store.config().is_err());
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), whole);
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    assert_eq!(store.config().unwrap().pstd_token, first.pstd_token);
+}

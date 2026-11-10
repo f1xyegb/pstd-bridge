@@ -65,6 +65,9 @@ pub struct Post {
     pub idea: String,
     #[serde(default)]
     pub prompt: String,
+    /// Instagram and Threads go out as one post: pstd marks both posted together
+    #[serde(default)]
+    pub together: bool,
     /// in this order; the first is the cover
     #[serde(default)]
     pub media: Vec<String>,

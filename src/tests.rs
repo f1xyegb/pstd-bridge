@@ -298,3 +298,73 @@ fn a_post_reads_without_its_optional_fields() {
     let p: Post = serde_json::from_value(json!({ "id": "x", "project": "y", "placements": [{ "network": "threads", "at": "z" }] })).unwrap();
     assert_eq!(p.placements[0].format, "post");
 }
+
+fn open_review(r: &Rig) -> crate::store::Review {
+    let mut config = r.store.config().unwrap();
+    config.url = "https://bridge.example".into();
+    config.image_key = "the person's key".into();
+    config.review = crate::store::Review { pstd_token: crate::store::token(), claude_token: crate::store::token(), code: "abcd2345".into() };
+    r.store.save_config(&config).unwrap();
+    config.review
+}
+
+#[tokio::test]
+async fn app_review_gets_the_test_post_and_never_the_persons_mailbox() {
+    let r = rig();
+    publish(&r).await;
+    assert!(!tool(&r, "pstd_add_post", post("real", vec![])).await.1);
+    let test = open_review(&r);
+
+    // the test token sees one test post, with its picture, and no image key
+    let (status, body) = send(&r.app, Method::GET, "/api/posts", &test.pstd_token, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let posts: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(posts["posts"].as_array().unwrap().len(), 1);
+    assert_eq!(posts["posts"][0]["id"], crate::review::POST);
+    let at = posts["posts"][0]["placements"][0]["at"].as_str().unwrap();
+    assert!(chrono::DateTime::parse_from_rfc3339(at).unwrap() > chrono::Utc::now());
+    let (status, bytes) = send(&r.app, Method::GET, &format!("/api/media/{}", crate::review::PICTURE), &test.pstd_token, None).await;
+    assert_eq!((status, bytes.as_slice()), (StatusCode::OK, crate::review::JPEG));
+    assert_eq!(send(&r.app, Method::GET, "/api/media/anything-else", &test.pstd_token, None).await.0, StatusCode::NOT_FOUND);
+    let (_, health) = send(&r.app, Method::GET, "/api/health", &test.pstd_token, None).await;
+    assert_eq!(serde_json::from_slice::<Value>(&health).unwrap()["images"], false);
+
+    // what the reviewer sends is answered and dropped; taking the test post keeps it for the next device
+    let theirs = json!({ "projects": [{ "id": "x", "name": "Review", "networks": ["threads"] }] });
+    assert_eq!(send(&r.app, Method::PUT, "/api/snapshot", &test.pstd_token, Some(theirs)).await.0, StatusCode::NO_CONTENT);
+    assert_eq!(send(&r.app, Method::PUT, "/api/image-key", &test.pstd_token, Some(json!({ "key": "theirs" }))).await.0, StatusCode::NO_CONTENT);
+    let taken = format!("/api/posts/{}/taken", crate::review::POST);
+    assert_eq!(send(&r.app, Method::POST, &taken, &test.pstd_token, None).await.0, StatusCode::NO_CONTENT);
+    let (_, again) = send(&r.app, Method::GET, "/api/posts", &test.pstd_token, None).await;
+    assert_eq!(serde_json::from_slice::<Value>(&again).unwrap()["posts"][0]["id"], crate::review::POST);
+
+    // the person's own mailbox is untouched: their plan, key and waiting post
+    assert_eq!(r.store.snapshot().unwrap()["projects"][0]["id"], P);
+    assert_eq!(r.store.config().unwrap().image_key, "the person's key");
+    let (_, mine) = send(&r.app, Method::GET, "/api/posts", &r.pstd, None).await;
+    let mine: Value = serde_json::from_slice(&mine).unwrap();
+    assert_eq!(mine["posts"].as_array().unwrap().len(), 1);
+    assert_eq!(mine["posts"][0]["id"], "real");
+
+    // and the test tokens don't open Claude's side
+    assert_eq!(send(&r.app, Method::POST, "/mcp", &test.claude_token, Some(json!({}))).await.0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_review_link_opens_only_with_its_code_and_only_while_open() {
+    let r = rig();
+    assert_eq!(send(&r.app, Method::GET, "/r/abcd2345", "", None).await.0, StatusCode::NOT_FOUND);
+    let test = open_review(&r);
+    let (status, page) = send(&r.app, Method::GET, "/r/ABCD2345", "", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let page = String::from_utf8(page).unwrap();
+    assert!(page.contains(&format!("token={}", test.pstd_token)));
+    assert!(!page.contains(&r.pstd));
+    assert_eq!(send(&r.app, Method::GET, "/r/abcd2346", "", None).await.0, StatusCode::NOT_FOUND);
+
+    let mut config = r.store.config().unwrap();
+    config.review = Default::default();
+    r.store.save_config(&config).unwrap();
+    assert_eq!(send(&r.app, Method::GET, "/r/abcd2345", "", None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(send(&r.app, Method::GET, "/api/posts", &test.pstd_token, None).await.0, StatusCode::UNAUTHORIZED);
+}

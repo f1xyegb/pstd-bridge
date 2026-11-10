@@ -2,7 +2,8 @@
 //! does the rest and ends on the QR for pstd and the line for Claude. Linux servers with systemd;
 //! elsewhere it says so and stops.
 
-use crate::store::{Config, Store};
+use crate::review;
+use crate::store::{token, Config, Review, Store};
 use crate::DEFAULT_BIND;
 use qrcode::render::unicode;
 use qrcode::QrCode;
@@ -60,6 +61,12 @@ fn encoded(text: &str) -> String {
 
 pub fn pair_link(config: &Config) -> String {
     format!("pstd://connect?url={}&token={}&claude={}", encoded(&config.url), config.pstd_token, config.claude_token)
+}
+
+/// the pairing link of App Review's test mailbox: this server, the test pair of tokens
+pub fn review_link(config: &Config) -> String {
+    let test = Config { pstd_token: config.review.pstd_token.clone(), claude_token: config.review.claude_token.clone(), ..config.clone() };
+    pair_link(&test)
 }
 
 pub fn claude_line(config: &Config) -> String {
@@ -294,5 +301,41 @@ pub fn key(store: &Store) -> io::Result<()> {
         run_quiet("chown", &[&format!("{SERVICE}:{SERVICE}"), &store.root().join("config.json").to_string_lossy()]);
     }
     println!("saved");
+    Ok(())
+}
+
+/// `review`: opens App Review's test mailbox (once; later runs show it again) and prints its short
+/// link and QR. `review off` closes it: the link and the test tokens stop working at once
+pub fn review(store: &Store, off: bool) -> io::Result<()> {
+    let mut config = store.config()?;
+    if config.url.is_empty() {
+        return Err(io::Error::other("run setup first"));
+    }
+    if off {
+        config.review = Review::default();
+        save_owned(store, &config)?;
+        println!("App Review's test mailbox is closed: its link and QR no longer work.");
+        return Ok(());
+    }
+    if !config.review.on() {
+        config.review = Review { pstd_token: token(), claude_token: token(), code: review::code() };
+        save_owned(store, &config)?;
+    }
+    let code = QrCode::new(review_link(&config)).map_err(io::Error::other)?;
+    let picture = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
+    println!("\nApp Review's test mailbox — apart from yours: whoever connects with it gets one test post,");
+    println!("and nothing they send is kept. Your own posts, plan and keys can't be reached with it.\n");
+    println!("On the iPhone or iPad with pstd, open in Safari:\n\n  {}/r/{}\n", config.url, config.review.code);
+    println!("or scan this with the camera:\n{picture}");
+    println!("After the review: sudo pstd-bridge review off\n");
+    Ok(())
+}
+
+/// the config written as root still belongs to the service, which reads it
+fn save_owned(store: &Store, config: &Config) -> io::Result<()> {
+    store.save_config(config)?;
+    if is_root() {
+        run_quiet("chown", &[&format!("{SERVICE}:{SERVICE}"), &store.root().join("config.json").to_string_lossy()]);
+    }
     Ok(())
 }

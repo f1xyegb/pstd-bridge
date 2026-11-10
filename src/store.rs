@@ -38,6 +38,26 @@ pub struct Config {
     pub image_key: String,
     #[serde(default)]
     pub image_model: String,
+    /// App Review's test mailbox (`review.rs`); empty while it is off
+    #[serde(default)]
+    pub review: Review,
+}
+
+/// a second pair of tokens that opens only the test mailbox, and the code of its short link
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct Review {
+    #[serde(default)]
+    pub pstd_token: String,
+    #[serde(default)]
+    pub claude_token: String,
+    #[serde(default)]
+    pub code: String,
+}
+
+impl Review {
+    pub fn on(&self) -> bool {
+        !self.pstd_token.is_empty() && !self.code.is_empty()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

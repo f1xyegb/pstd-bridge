@@ -3,6 +3,7 @@
 mod api;
 mod images;
 mod mcp;
+mod review;
 mod setup;
 mod store;
 #[cfg(test)]
@@ -19,7 +20,8 @@ use store::Store;
 const USAGE: &str = "pstd-bridge setup     set this server up, step by step
 pstd-bridge serve     run the server
 pstd-bridge connect   show the QR for pstd and the line for Claude again
-pstd-bridge key       set the image generator's key";
+pstd-bridge key       set the image generator's key
+pstd-bridge review    open a test mailbox for App Review and show its link; `review off` closes it";
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8787";
 const HTTPS_PORT: u16 = 443;
@@ -84,6 +86,7 @@ async fn main() {
             }
             "connect" => setup::connect(&store),
             "key" => setup::key(&store),
+            "review" => setup::review(&store, std::env::args().nth(2).as_deref() == Some("off")),
             _ => {
                 println!("{USAGE}");
                 Ok(())

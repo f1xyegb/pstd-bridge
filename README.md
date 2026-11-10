@@ -15,6 +15,7 @@ pstd-bridge setup     set this server up
 pstd-bridge serve     run the server
 pstd-bridge connect   show the QR for pstd and the line for Claude
 pstd-bridge key       set the image generator's key
+pstd-bridge review    open a test mailbox for App Review; `review off` closes it
 ```
 
 Claude connects over MCP at `/mcp`: `pstd_plan`, `pstd_generate_image`, `pstd_add_post`, `pstd_queue`. A picture or video made on Claude's own machine goes up as a raw PNG, JPEG, WebP, MP4 or MOV file of any size, and the image key is then not needed:
@@ -22,3 +23,5 @@ Claude connects over MCP at `/mcp`: `pstd_plan`, `pstd_generate_image`, `pstd_ad
 ```sh
 curl -H "Authorization: Bearer $TOKEN" --data-binary @post.png https://your-server/mcp/media
 ```
+
+`review` opens a second, separate mailbox with its own tokens and a short link, `https://your-server/r/<code>`. Opened in Safari on a device with pstd, it connects pstd to that mailbox, which holds one test post (a picture and a caption per network, scheduled for tomorrow) and keeps nothing it is sent. Your own mailbox, plan and keys can't be reached with it.

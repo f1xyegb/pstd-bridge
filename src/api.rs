@@ -3,12 +3,15 @@
 
 use crate::images::Maker;
 use crate::mcp;
+use crate::review;
+use crate::setup;
 use crate::store::Store;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Request, State};
+use axum::Extension;
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures::StreamExt;
@@ -40,9 +43,23 @@ fn matches(given: &[u8], token: &str) -> bool {
     !token.is_empty() && bool::from(given.ct_eq(token.as_bytes()))
 }
 
-async fn pstd_only(State(bridge): State<Bridge>, request: Request, next: Next) -> Response {
-    let token = bridge.store.config().map(|c| c.pstd_token).unwrap_or_default();
-    if matches(bearer(&request), &token) { next.run(request).await } else { StatusCode::UNAUTHORIZED.into_response() }
+/// a request made with App Review's token: it reaches the test mailbox only (`review.rs`)
+#[derive(Clone, Copy)]
+pub struct Sandbox;
+
+type Test = Option<Extension<Sandbox>>;
+
+async fn pstd_only(State(bridge): State<Bridge>, mut request: Request, next: Next) -> Response {
+    let Ok(config) = bridge.store.config() else { return StatusCode::UNAUTHORIZED.into_response() };
+    let given = bearer(&request).to_vec();
+    if matches(&given, &config.pstd_token) {
+        return next.run(request).await;
+    }
+    if config.review.on() && matches(&given, &config.review.pstd_token) {
+        request.extensions_mut().insert(Sandbox);
+        return next.run(request).await;
+    }
+    StatusCode::UNAUTHORIZED.into_response()
 }
 
 async fn claude_only(State(bridge): State<Bridge>, request: Request, next: Next) -> Response {
@@ -50,16 +67,20 @@ async fn claude_only(State(bridge): State<Bridge>, request: Request, next: Next)
     if matches(bearer(&request), &token) { next.run(request).await } else { StatusCode::UNAUTHORIZED.into_response() }
 }
 
-async fn health(State(bridge): State<Bridge>) -> Json<Value> {
-    let images = bridge.store.config().is_ok_and(|c| !c.image_key.is_empty());
+async fn health(State(bridge): State<Bridge>, test: Test) -> Json<Value> {
+    let images = test.is_none() && bridge.store.config().is_ok_and(|c| !c.image_key.is_empty());
     Json(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION"), "images": images }))
 }
 
 /// the person types the generator's key in pstd, not in a terminal
-async fn image_key(State(bridge): State<Bridge>, Json(body): Json<Value>) -> Response {
+async fn image_key(State(bridge): State<Bridge>, test: Test, Json(body): Json<Value>) -> Response {
     let Some(key) = body["key"].as_str().map(str::trim).filter(|k| !k.is_empty()) else {
         return (StatusCode::BAD_REQUEST, "a key is needed").into_response();
     };
+    // the test mailbox holds no one's key
+    if test.is_some() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     let saved = bridge.store.config().and_then(|mut config| {
         config.image_key = key.to_string();
         bridge.store.save_config(&config)
@@ -70,18 +91,31 @@ async fn image_key(State(bridge): State<Bridge>, Json(body): Json<Value>) -> Res
     }
 }
 
-async fn put_snapshot(State(bridge): State<Bridge>, Json(snapshot): Json<Value>) -> Response {
+async fn put_snapshot(State(bridge): State<Bridge>, test: Test, Json(snapshot): Json<Value>) -> Response {
+    // the reviewer's plan is answered and dropped: it never meets the person's Claude
+    if test.is_some() {
+        return if snapshot["projects"].is_array() { StatusCode::NO_CONTENT } else { StatusCode::BAD_REQUEST }.into_response();
+    }
     match bridge.store.put_snapshot(&snapshot) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
     }
 }
 
-async fn posts(State(bridge): State<Bridge>) -> Json<Value> {
+async fn posts(State(bridge): State<Bridge>, test: Test) -> Json<Value> {
+    if test.is_some() {
+        return Json(json!({ "posts": [review::post()] }));
+    }
     Json(json!({ "posts": bridge.store.posts() }))
 }
 
-async fn media(State(bridge): State<Bridge>, Path(id): Path<String>) -> Response {
+async fn media(State(bridge): State<Bridge>, test: Test, Path(id): Path<String>) -> Response {
+    if test.is_some() {
+        if id != review::PICTURE {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        return ([(header::CONTENT_TYPE, "image/jpeg")], review::JPEG).into_response();
+    }
     let Some((path, length, mime)) = bridge.store.media(&id) else { return StatusCode::NOT_FOUND.into_response() };
     let Ok(file) = tokio::fs::File::open(path).await else { return StatusCode::NOT_FOUND.into_response() };
     ([(header::CONTENT_TYPE, mime.to_string()), (header::CONTENT_LENGTH, length.to_string())], Body::from_stream(ReaderStream::new(file))).into_response()
@@ -115,11 +149,25 @@ async fn upload(State(bridge): State<Bridge>, body: Body) -> Response {
     }
 }
 
-async fn taken(State(bridge): State<Bridge>, Path(id): Path<String>) -> Response {
+async fn taken(State(bridge): State<Bridge>, test: Test, Path(id): Path<String>) -> Response {
+    // the test post stays for the next device
+    if test.is_some() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     match bridge.store.take(&id) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(message) => (StatusCode::BAD_REQUEST, message).into_response(),
     }
+}
+
+/// the short link for App Review: the right code opens the page that hands pstd the test
+/// mailbox; anything else, or the mailbox off, is not found
+async fn review_link(State(bridge): State<Bridge>, Path(code): Path<String>) -> Response {
+    let Ok(config) = bridge.store.config() else { return StatusCode::NOT_FOUND.into_response() };
+    if !config.review.on() || !matches(code.to_ascii_lowercase().as_bytes(), &config.review.code) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Html(review::page(&setup::review_link(&config))).into_response()
 }
 
 pub fn router(bridge: Bridge) -> Router {
@@ -135,5 +183,6 @@ pub fn router(bridge: Bridge) -> Router {
         .route("/mcp", post(mcp::handle).get(mcp::no_stream).delete(mcp::no_stream))
         .route("/mcp/media", post(upload).layer(DefaultBodyLimit::disable()))
         .route_layer(middleware::from_fn_with_state(bridge.clone(), claude_only));
-    app.merge(claude).layer(DefaultBodyLimit::max(MAX_BODY)).with_state(bridge)
+    let open = Router::new().route("/r/{code}", get(review_link));
+    app.merge(claude).merge(open).layer(DefaultBodyLimit::max(MAX_BODY)).with_state(bridge)
 }
